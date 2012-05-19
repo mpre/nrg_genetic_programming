@@ -1,18 +1,23 @@
 #include <iostream>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 
 #include <ga/ga.h>
 #include <ga/GASelector.h>
 #include <ga/GATree.C>
 #include <ga/GATreeGenome.C>
 
-#define MAX_DEPTH 8
-#define MIN_DEPTH 2
+#define MAX_DEPTH 5
+#define MIN_DEPTH 1
 #define FUNC_N 5
+#define TERM_N 8
+#define POP_SIZE 100
 
 #define SOGLIA 20000
 
+int initialized_genomes =0;
+int depth_of_this_bucket=1;
 class node_content
 {
 public:
@@ -68,18 +73,7 @@ void init_values()
 float eval(GATreeGenome<node_content>& tree, int n)
 {
   if (tree.current()->terminal) {
-    if (n <= nvars -2)
-      return values[n][tree.current()->type];
-    else{ 
-      switch (n + 2 - nvars) {
-      case 0:
-	return 1000;
-	break;
-      case 1:
-	return 2000;
-	break;
-      }
-    }
+    return values[n][tree.current()->type];
   } else {
     int type = tree.current()->type;
     tree.child();
@@ -131,44 +125,94 @@ float objective(GAGenome& g)
 void init_random(GATreeGenome<node_content>& tree, int depth)
 {
   if ((depth == 0) || GAFlipCoin(0.5)) {
-    node_content n(true,GARandomInt(0,nvars-2));
+    node_content n(true,GARandomInt(0,TERM_N));
     tree.insert(n,GATreeBASE::BELOW);
   } else {
     node_content n(false,GARandomInt(0,FUNC_N));
     tree.insert(n,GATreeBASE::BELOW);
-    for (int i = 0; i < 2; i++)
+    int arity = n.type==4?3:2;
+    for (int i = 0; i < arity; i++)
       init_random(tree,depth-1);
   }
   tree.parent(); //riporto l'iteratore al posto corretto.
 }
 
-/* Inizializzazione random */
-void init_tree(GAGenome& g)
+/* Inizializzazione grow */
+void init_tree_grow(GAGenome& g)
 {
   GATreeGenome<node_content>& tree = (GATreeGenome<node_content> &)g;
   tree.root();
   tree.destroy();
   node_content n(false,GARandomInt(0,FUNC_N));
   tree.insert(n,GATreeBASE::ROOT);
-  for (int i = 0; i < 2; i++)
-    init_random(tree,MAX_DEPTH-1);
+  int arity = n.type==4?3:2;
+  for (int i = 0; i < arity; i++)
+    init_random(tree,depth_of_this_bucket);
+}
+
+void init_full(GATreeGenome<node_content>& tree, int depth) {
+  if(depth==0) {
+    node_content n(true, GARandomInt(0, TERM_N));
+    tree.insert(n, GATreeBASE::BELOW);
+  } else {
+    node_content n(false, GARandomInt(0, FUNC_N));
+    tree.insert(n, GATreeBASE::BELOW);
+    int arity = n.type==4?3:2;
+    for (int i=0; i<arity; ++i)
+      init_full(tree, depth-1);
+  }
+  tree.parent();
+}
+
+/* Inizializzazione full */
+void init_tree_full(GAGenome& g)
+{
+  GATreeGenome<node_content>& tree = (GATreeGenome<node_content>&) g;
+  tree.root();
+  tree.destroy();
+  node_content n(false, GARandomInt(0, FUNC_N));
+  tree.insert(n, GATreeBASE::ROOT);
+  int arity = tree.current()->type==4?3:2;
+  for(int i=0; i<arity; ++i) {
+    init_full(tree, depth_of_this_bucket);
+  }
+}
+
+/* Inizializzazione ramped half-half */
+void init_ramped_half_half(GAGenome& g) {
+  
+  int elements_in_a_bucket = POP_SIZE / (MAX_DEPTH*2);
+  int full_buckets = initialized_genomes / elements_in_a_bucket;
+  int elements_in_this_bucket = initialized_genomes - elements_in_a_bucket*full_buckets;
+  depth_of_this_bucket = full_buckets + 1;
+  std::cout << "Elementi in questo bucket " << elements_in_this_bucket << " su " << elements_in_a_bucket << std::endl;
+  bool grow_or_full;
+  
+  std::cout << "Inizializzato un ";
+  if (elements_in_this_bucket < elements_in_a_bucket/2)
+    grow_or_full = true;
+  else
+    grow_or_full = false;
+  if(grow_or_full) {
+    init_tree_grow(g);
+    std::cout << "grow " << std::endl;
+  }
+  else { 
+    init_tree_full(g);
+    std::cout << "full " << std::endl;
+  }
+  std::cout << "Depth : " << depth_of_this_bucket << std::endl;
+  initialized_genomes +=1;
+  std::cout << "Inizializzati : " << initialized_genomes << std::endl;
+  print_tree(g);
+  std::cout <<std::endl << std::endl;
 }
 
 void print_node_content(const GAGenome& g)
 {
   GATreeGenome<node_content>& tree = (GATreeGenome<node_content> &)g;
   if (tree.current()->terminal) {
-    if(tree.current()->type <= nvars - 2)
-      std::cout << "x" << tree.current()->type;
-    else 
-      switch(tree.current()->type - nvars + 2) { 
-      case 0:
-	std::cout << "1000";
-	break;
-      case 1:
-	std::cout << "2000";
-	break;
-      }
+    std::cout << "x" << tree.current()->type;
   } else {
     std::cout << "(";
     switch (tree.current()->type) {
@@ -217,17 +261,17 @@ int main()
   init_values();
   GARandomSeed();
   GATreeGenome<node_content> genome(objective);
-  genome.initializer(init_tree);
+  genome.initializer(init_ramped_half_half);
   genome.crossover(GATreeGenome<node_content>::OnePointCrossover);
   genome.mutator(GATreeGenome<node_content>::SwapSubtreeMutator);
   GASimpleGA ga(genome);
   ga.initialize();
   ga.minimize();
-  ga.populationSize(100);
+  ga.populationSize(POP_SIZE);
   ga.pMutation(0.1);
   ga.pCrossover(0.9);
   ga.elitist(gaTrue);
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; initialized_genomes * i < 10000; i++) {
     ++ga;
     print_tree(ga.statistics().bestIndividual());
     std::cout << std::endl;
